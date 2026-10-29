@@ -1,0 +1,53 @@
+---
+name: CI
+
+# Full compatibility suite: the e2e matrix over every supported image
+# (docs/compatibility.md -> Makefile E2E_FULL_IMAGES), both backends. Runs on main
+# pushes and CI-labelled PRs, only when distrobox files changed. The per-PR gating
+# subset is e2e.yml; both share the matrix logic in e2e-matrix.yml.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, ready_for_review, edited, labeled]
+  workflow_dispatch:
+    inputs:
+      run_always:
+        description: 'Run even if no files are changed'
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  check_changes:
+    runs-on: ubuntu-latest
+    if: >-
+      contains( github.event.pull_request.labels.*.name, 'CI') ||
+      github.ref == 'refs/heads/main'
+    outputs:
+      distrobox_changed: ${{ steps.check_file_changed.outputs.distrobox_changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Checkout as many commits as needed for the diff
+          fetch-depth: 2
+      - id: check_file_changed
+        run: |
+          if git diff --name-only HEAD^ HEAD | grep -E '\.go$|go\.mod|go\.sum|Makefile|docs/compatibility\.md|internal/inside-distrobox/assets/|hack/ci/'; then
+            echo "distrobox_changed=True" >> "$GITHUB_OUTPUT"
+          else
+            echo "distrobox_changed=False" >> "$GITHUB_OUTPUT"
+          fi
+
+  e2e:
+    needs: check_changes
+    if: >-
+      needs.check_changes.outputs.distrobox_changed == 'True' ||
+      github.event.inputs.run_always == 'True'
+    uses: ./.github/workflows/e2e-matrix.yml
+    with:
+      images_var: E2E_FULL_IMAGES

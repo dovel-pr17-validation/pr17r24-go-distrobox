@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "2.0.0-rc.*"
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # This workflow publishes release artifacts, so never restore a module
+      # cache that a pull request run may have poisoned.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          make build
+
+      - name: Package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          cd ./bin
+          tar czf "../distrobox-${GOOS}-${GOARCH}.tar.gz" .
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: distrobox-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: distrobox-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create / delete
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME}"
+          # If a release for this tag already exists (e.g. it was drafted
+          # from the web UI, which pushes the tag along with the draft),
+          # delete it so we can re-create it with the freshly built artifacts
+          # and auto-generated notes. The tag itself is left untouched.
+          if gh release view "${version}" >/dev/null 2>&1; then
+            gh release delete "${version}" --yes
+          fi
+          gh release create "${version}" \
+            --title "${version}" \
+            --generate-notes \
+            --prerelease \
+            artifacts/*

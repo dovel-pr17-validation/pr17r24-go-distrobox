@@ -1,0 +1,225 @@
+# This is a basic workflow to help you get started with Actions
+
+name: Lint
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push or pull request events but only for the main branch
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, ready_for_review, edited]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SHELL_SCRIPTS_DIR: internal/inside-distrobox/assets
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: "go.mod"
+      - run: make test
+
+  golangci:
+    name: Golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: "go.mod"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.5.0
+
+  fmtcheck:
+    name: Go fmt check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: "go.mod"
+      - name: format check
+        run: |
+          make fmt
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Code is not formatted. Please run 'make fmt' and commit the changes."
+            git --no-pager diff
+            exit 1
+          fi
+
+  dash:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run dash -n
+        run: |
+          result=0
+          for file in $(find ${SHELL_SCRIPTS_DIR} -type f); do
+            if file "$file" | grep -qi shell; then
+              echo "### Checking file $file..."
+              dash -n $file
+              result=$(( result + $? ))
+            fi
+          done
+          exit $result
+
+  shfmt:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run shfmt
+        run: |
+          result=0
+          podman pull docker.io/peterdavehello/shfmt:latest
+          for file in $(find ${SHELL_SCRIPTS_DIR} -type f); do
+            if file "$file" | grep -qi shell; then
+              echo "### Checking file $file..."
+              podman run --rm -v "$PWD:/mnt" docker.io/peterdavehello/shfmt:latest shfmt -d -s -ci -sr -kp -fn -i=0 -p /mnt/$file
+              result=$(( result + $? ))
+            fi
+          done
+          exit $result
+
+
+  shellcheck:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Exclude from bashate the following rules:
+      #   - SC2310 we don't want to exit if errors happen inside a check, that's why we have a check...
+      #   - SC2311 don't care if we inherit errexit inside substitutions, we do checks for that.
+      #   - SC2312 we already check errors and adding "|| true" everywhere hinders readability.
+      - name: Run shellcheck
+        run: |
+          result=0
+          podman pull docker.io/koalaman/shellcheck:stable
+          for file in $(find ${SHELL_SCRIPTS_DIR} -type f); do
+            if file "$file" | grep -qi shell; then
+              echo "### Checking file $file..."
+              # Should read the .shellcheckrc file to behave like  -s sh -a -o all -Sstyle -Calways -x -e SC2310,SC2311,SC2312
+              podman run --rm -v "$PWD:/mnt" docker.io/koalaman/shellcheck:stable -a -Sstyle -Calways $file
+              result=$(( result + $? ))
+            fi
+          done
+          exit $result
+
+  differential-shellcheck:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write # upload the SARIF report to the Security tab
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Run Differential ShellCheck
+        uses: redhat-plumbers-in-action/differential-shellcheck@f51c7c0d32777d00de777131d25918617a246415 # v5.5.7
+        with:
+          severity: style
+          scan-directory: ${{ env.SHELL_SCRIPTS_DIR }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  bashate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Exclude from bashate the following rules:
+      #   - E002 we use tab indentation as suggested by shfmt.
+      #   - E003 we use tab indentation as suggested by shfmt.
+      #   - E010 for readability allow if/then and for/do to be on different lines.
+      #   - E011 for readability allow if/then and for/do to be on different lines.
+      - name: Run bashate
+        run: |
+          sudo pip3 install -U bashate
+          for file in $(find ${SHELL_SCRIPTS_DIR} -type f); do
+            if file "$file" | grep -qi shell; then
+              echo "### Checking file $file..."
+               bashate -i E002,E003,E010,E011 --max-line-length 120 $file
+              result=$(( result + $? ))
+            fi
+          done
+          exit $result
+
+  codespell:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579 # v2.2
+        with:
+          skip: .git,*.pdf,*.1,*.css,*.lock
+
+  shell-funcheck:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run shell-funcheck
+        run: |
+          curl -fsSL -o shell-funcheck-amd64 https://github.com/89luca89/shell-funcheck/releases/download/v0.0.1/shell-funcheck-amd64
+          echo "f7af60f05027b94acebeff1b5a71fecede19c1b79f26efc15ac34b7f03b97947  shell-funcheck-amd64" | sha256sum -c -
+          chmod +x ./shell-funcheck-amd64
+          for i in ${SHELL_SCRIPTS_DIR}/*; do
+          ./shell-funcheck-amd64 check "$i"
+          done
+
+  commitlint:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install commitlint
+        run: npm install -D @commitlint/cli@20.5.0 @commitlint/config-conventional@20.5.0
+      - name: Validate PR commits with commitlint
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npx commitlint --config .github/commitlint.config.js --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
